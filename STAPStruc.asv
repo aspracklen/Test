@@ -1,0 +1,59 @@
+clear;
+clc;
+Radar.PRF=2300;
+Radar.vp=150;
+Radar.M=64;
+Radar.ChannelNum=4;
+Radar=Setup(Radar);
+
+%%
+Clutter=Clutter_Gen(Radar);
+%%
+
+%%
+% Signal=Noise+SigC;
+% FFTHann=repmat(hann(64),1,length(range));
+% % Signal(:,round(length(range)/2))=Signal(:,round(length(range)/2))+Vtgt;
+% Test=zeros(length(range),M);
+% for i=1:length(range);
+% Test(i,:)=sum(reshape(Signal(:,i),ChannelNum,M));
+% end;
+% Test=Test.';
+% FFT=fftshift(fft(Test.*FFTHann,128),1);
+% % surf(10.*log10(abs(FFT)))
+% % shading interp
+% %
+CovEst=Cov_Est(Radar,Clutter);
+%
+
+InvRu=inv(CovEst);
+%%
+
+OSTAPWeights=OSTAP(Radar,InvRu);
+%%
+TestClutter=Clutter_Gen(Radar);
+%%
+%
+%%Tgt Gen
+Radar.vtgt=10;
+TestSig=Add_Tgt(Radar,TestClutter);
+
+%%
+OSTAPApply(Radar,PostDopplerWeights,TestSig,CovEst)
+
+%%
+PostDopplerWeights=PostDoppler(Radar,CovEst);
+%%
+PostDopplerApply(Radar,PostDopplerWeights,TestSig,CovEst)
+
+%%
+SumData=zeros(length(range),Radar.M);
+for i=1:length(range);
+SumData(i,:)=sum(reshape(SigC(:,i),ChannelNum,Radar.M));
+end;
+SumData=SumData.';
+FFT=fftshift(fft(SumData,128),1);
+surf(10.*log10(abs(FFT)))
+%zlim([0,30])
+%caxis([0,30])
+shading interp

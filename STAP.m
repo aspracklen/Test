@@ -1,0 +1,267 @@
+clear;
+clc;
+f0=10e9;
+Pt=1000;
+B=10e6;
+PRF=2300;
+T=1/PRF;
+vp=150;
+M=64;
+c=3e8;
+Nc=1000;
+lambda=c/f0;
+Nx=64;
+Ny=12;
+AntA=Nx*lambda/2*Ny*lambda/2;
+Ae=AntA./(Nx*Ny);
+sigmaTgt=10;
+
+%Thermal Noise Power Computations
+k = 1.3806488e-23;            % Boltzmann Constant in J/K.
+To = 290;                     % Standard room Temperature in Kelvin.
+F = 7;                        % Receiver Noise Figure in dB;
+Te = To*(10^(F/10)-1);        % Effective Receiver Temperature in Kelvin.
+Lr = 0;                    % System Losses on receive in dB.
+Ts = 10^(Lr/10)*Te;           % Reception System Noise Temperature in Kelvin.
+Nn = k*Ts;                    % Receiver Noise PSD in Watts/Hz.
+Pn = Nn*B;                    % Receiver Noise Power in Watts
+
+%%Clutter 
+phi=linspace(0,180,Nc);        %Clutter Angles in degrees    
+ha=9e3;
+Rcik = 20*1852;                % (clutter) range of interest in meters.
+dphi = 2*pi/Nc;               % Azimuth angle increment in rad.
+dR = c/2/B;                   % Radar Range Resolution in meters.
+theta0 = asind(ha/Rcik);          % Grazing angle at the clutter patch in rad (flat earth model).
+gamma = 10^(-20/10);           % Terrain-dependent reflectivity factor.
+
+
+%%Geometry
+range=19*1852:dR:21*1852;   %Range of interest
+theta=asind(ha./range);     %Range of theta values;
+[Theta,Phi]=meshgrid(theta,phi);
+v=sind(Theta);
+u=cosd(Theta).*cosd(Phi);
+v0=ha/Rcik;
+u0=sqrt(1-(ha/Rcik)^2)*0;
+Range=ha./sind(Theta);
+%%Gain
+G=4*pi/3159*Nx^2*Ny^2*(diric(pi*(u-u0),Nx).*diric(pi*(v-v0),Ny)).^2;
+% %% Gain Analysis
+% surf(ha./sind(Theta)./1852,Phi,10.*log10(G))
+% % surf(Theta,Phi,10.*log10(G))
+% %surf(u,v,10.*log10(G))
+% shading interp
+% view(0,90)
+%
+% Clutter Patch RCS Calculation:
+PatchArea = Range.*dphi*dR; %%1/cos(theta)omitted
+sigma0 = gamma*sind(Theta);
+sigma = sigma0.*PatchArea;
+%
+PowerR=240*Pt*Ae/((4*pi)^2).*G.*sigma./Range.^4;
+VoltageR=sqrt(PowerR);
+%
+XEl=linspace(-32,31,64)*lambda/2;
+ZEl=linspace(-6,5,12)*lambda/2;
+[X,Z]=meshgrid(XEl,ZEl);
+Pulses=linspace(0,M-1,M);
+%
+%Spatial Combiner
+clc
+ChannelNum=4;
+TMat=zeros(Nx*Ny,ChannelNum);
+[Hannx,Hanny]=meshgrid(hann(Nx),hann(Ny));
+Hann=Hannx.*Hanny;
+XF=X(:);
+ZF=Z(:);
+HannF=Hann(:);
+for i=1:ChannelNum;
+Select=Nx*Ny/ChannelNum*(i-1)+1:Nx*Ny/ChannelNum*(i-1)+Nx*Ny/ChannelNum;
+TMat(Select,i)=exp(1i*2*pi/lambda*(XF(Select).*cosd(90)*cosd(theta0)-ZF(Select).*sind(theta0))).*HannF(Select);
+end;
+TMat=1/sqrt(Nx*Ny/ChannelNum).*TMat;
+%
+SigC=zeros(M*ChannelNum,length(range));
+for i=1:length(range);
+for k=1:Nc
+fsp=exp(1i*2*pi/lambda*(X.*cosd(Phi(k,i))*cosd(Theta(k,i))-Z.*sind(Theta(k,i))));
+fd=exp(1i*2*pi/lambda*2*vp*Pulses*T*cosd(Phi(k,i)).*cosd(Theta(k,i)));
+Vc=exp(1i.*2*pi*rand(1,1))*VoltageR(k,i).*kron(fd(:),TMat'*fsp(:));
+SigC(:,i)=SigC(:,i)+Vc;
+end
+i
+end;
+%
+Test=zeros(length(range),M);
+for i=1:length(range);
+Test(i,:)=sum(reshape(SigC(:,i),ChannelNum,M));
+end;
+Test=Test.';
+FFT=fftshift(fft(Test,128),1);
+mesh(10.*log10(abs(FFT)))
+
+%%
+Noise=sqrt(Pn/2)*(randn(256,length(range))+1i.*randn(256,length(range)));
+Signal=Noise+SigC;
+FFTHann=repmat(hann(64),1,length(range));
+% Signal(:,round(length(range)/2))=Signal(:,round(length(range)/2))+Vtgt;
+Test=zeros(length(range),M);
+for i=1:length(range);
+Test(i,:)=sum(reshape(Signal(:,i),ChannelNum,M));
+end;
+Test=Test.';
+FFT=fftshift(fft(Test.*FFTHann,128),1);
+% surf(10.*log10(abs(FFT)))
+% shading interp
+%
+CovEst=zeros(M*ChannelNum,M*ChannelNum);
+for i=1:length(range);
+CovEst=CovEst+Signal(:,i)*Signal(:,i)';
+end;
+CovEst=(1/length(range).*CovEst)+Pn*eye(M*ChannelNum);
+%
+
+InvRu=inv(CovEst);
+%%
+Eigen=eig(CovEst+0*eye(M*ChannelNum))
+plot(10*log10(sort(abs(Eigen),'descend')))
+
+%%TMat(Select,i)=exp(1i*2*pi/lambda*(XF(Select).*cosd(90)*cosd(theta0)-ZF(Select).*sind(theta0)));
+
+vTest=linspace(-17.25,17.25,301);
+Weights=zeros(M*ChannelNum,100);
+Test=zeros(length(vTest),1);
+        for i=1:length(vTest)
+            at=exp(1i*2*pi/lambda*(X.*cosd(90)*cosd(theta0)-Z.*sind(theta0)));
+            bt = exp(1i*2*pi/lambda*2*vTest(i)*Pulses*T); % Dummy Target Doppler Steering Vector
+            vt = kron(bt(:),TMat'*at(:));
+            w = InvRu*vt;
+Weights(:,i)=w;
+Test(i,1) = abs(w'*vt)^2/real(w'*CovEst*w);      % Eq. (132)
+i
+       end
+plot(10.*log10(abs(Test)),'*-')
+%%
+TestClutter=zeros(M*ChannelNum,length(range));
+for i=1:length(range);
+for k=1:Nc
+fsp=exp(1i*2*pi/lambda*(X.*cosd(Phi(k,i))*cosd(Theta(k,i))-Z.*sind(Theta(k,i))));
+fd=exp(1i*2*pi/lambda*2*vp*Pulses*T*cosd(Phi(k,i)).*cosd(Theta(k,i)));
+Vc=exp(1i.*2*pi*rand(1,1))*VoltageR(k,i).*kron(fd(:),TMat'*fsp(:));
+TestClutter(:,i)=TestClutter(:,i)+Vc;
+end
+i
+end;
+%%
+TestSig=TestClutter+1*sqrt(Pn/2)*(randn(256,length(range))+1i.*randn(256,length(range)));
+%
+%%Tgt Gen
+vtgt=2.5;
+GTgt=4*pi/3159*Nx^2*Ny^2*(diric(pi*(u0-u0),Nx).*diric(pi*(v0-v0),Ny)).^2;
+PowerTgt=240*Pt*Ae/((4*pi)^2).*GTgt.*sigmaTgt./Rcik.^4;
+VoltageTgt=sqrt(PowerTgt);
+
+fsptgt=exp(1i*2*pi/lambda*(X.*cosd(90)*cosd(theta0)-Z.*sind(theta0)));
+fdtgt=exp(1i*2*pi/lambda*2*vtgt*Pulses*T);
+Vtgt=VoltageTgt.*kron(fdtgt(:),TMat'*fsptgt(:));
+
+TestSig(:,round(length(range)/2))=TestSig(:,round(length(range)/2))+Vtgt;
+TestSig(:,round(length(range)/2)+1)=TestSig(:,round(length(range)/2)+1)+Vtgt;
+TestSig(:,round(length(range)/2)-1)=TestSig(:,round(length(range)/2)-1)+Vtgt;
+
+%%
+Data=zeros(length(range),length(Weights));
+for k=1:length(range);
+
+Data(k,:)=abs(Weights'*TestSig(:,k)).^2./diag(real(Weights'*CovEst*Weights));
+%Data(k,:)=abs(Weights'*TestSig(:,k)).^2;
+k
+end;
+surf(10.*log10(abs(Data)))
+shading interp
+%%
+%% Doppler Filter Bank Creation:
+dopplerfilterbank = linspace(-PRF/2,PRF/2,M+1);
+omegadopplerbank = dopplerfilterbank/PRF;
+% fd = 0:.5:300;   Lfd = length(fd);
+% omegad = fd/fr;
+
+
+% Doppler Filter Matrix Construction for Adjacent Bin Post-Doppler method
+clc
+U2 = zeros(M,M);
+K=3;
+P = floor(K/2);
+    for m=1:M
+        U2(:,m) =  1/sqrt(M)*exp(-1i*2*pi*omegadopplerbank(m)*(0:M-1));  % Doppler Filter Steering Vector
+    end
+
+
+
+td60ab = chebwin(M,30);                                               % 60-dB Chebyshev Doppler Taper.
+
+
+% Create Doppler Filter Bank in Fab matrix for Adjacent Bin post Doppler method:
+Fab60 = diag(td60ab)*U2;
+Fmab60 = zeros(M,K,M);
+for m=1:M
+        if (m-P>0) && (m+P<=M)
+            Fmab60(:,:,m) = Fab60(:,m-P:m+P);
+        elseif (m-P<=0) && (m+P<=M)
+            Fmab60(:,:,m) = [Fab60(:,M+(m-P):M) Fab60(:,1:m+P)];
+        elseif m+P>M
+            Fmab60(:,:,m) = [Fab60(:,m-P:M) Fab60(:,1:m+P-M)];
+        end   
+end
+%
+DopplerWeights=zeros(256,M);
+for m=1:M
+    bdfb = exp(-1i*2*pi*omegadopplerbank(m)*(0:M-1)).';
+    at=exp(1i*2*pi/lambda*(X.*cosd(90)*cosd(theta0)-Z.*sind(theta0)));
+    gt = kron(bdfb,TMat'*at(:));                   % Desired Vector common for both methods.
+    %% Adjacent-Bin SINR Computations
+    f60abm = Fmab60(:,:,m);
+    R60abum = kron(f60abm,eye(ChannelNum))'*CovEst*kron(f60abm,eye(ChannelNum));
+    gt60abm = kron(f60abm,eye(ChannelNum))'*gt;
+    % Calculate K*N X 1 Adaptive Weight for m-th Doppler Bin.
+    w60abm = R60abum\gt60abm;
+    wab60 = kron(f60abm,eye(ChannelNum))*w60abm;  
+DopplerWeights(:,m)=wab60;
+%     for n=1:Lfd
+%         bt = exp(1i*2*pi*omegad(n)*(0:M-1)).'; % Dummy Target Doppler Steering Vector
+%         vt = kron(bt,at);
+%         SINRab0_mat(m,n)  = abs(wab0'*vt)^2/(wab0'*Ru*wab0);
+%         SINRab30_mat(m,n) = abs(wab30'*vt)^2/(wab30'*Ru*wab30);
+%         SINRab60_mat(m,n) = abs(wab60'*vt)^2/(wab60'*Ru*wab60);
+%         SINRab90_mat(m,n) = abs(wab90'*vt)^2/(wab90'*Ru*wab90);
+%     end
+    
+end
+%%
+Data=zeros(length(range),M);
+for k=1:length(range);
+
+Data(k,:)=abs(DopplerWeights'*TestSig(:,k)).^2./diag(real(DopplerWeights'*CovEst*DopplerWeights));
+%Data(k,:)=abs(Weights'*TestSig(:,k)).^2;
+k
+end;
+[Vel,RangeGates]=meshgrid(linspace(- PRF/4*lambda, PRF/4*lambda,M),linspace(1, length(range),length(range)));
+pcolor(Vel,RangeGates,10.*log10(abs(Data)))
+xlabel('Velocity(m/s)')
+ylabel('Range Gates')
+colormap jet
+zlim([0,max(10.*log10(abs(Data(:))))+5])
+caxis([0,max(10.*log10(abs(Data(:))))+5])
+shading interp
+%%
+SumData=zeros(length(range),M);
+for i=1:length(range);
+SumData(i,:)=sum(reshape(SigC(:,i),ChannelNum,M));
+end;
+SumData=SumData.';
+FFT=fftshift(fft(SumData,128),1);
+surf(10.*log10(abs(FFT)))
+%zlim([0,30])
+%caxis([0,30])
+shading interp
